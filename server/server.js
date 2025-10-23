@@ -35,7 +35,7 @@ app.use('/api/documents', require('./routes/documents'));
 app.use('/api/chat', require('./routes/chat'));
 
 // Health check
-app.get('/api/health', (req, res) => {
+app.get('/', (req, res) => {
   res.json({ status: 'ok', message: 'Server is running' });
 });
 
