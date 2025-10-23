@@ -7,12 +7,28 @@ const rateLimit = require('express-rate-limit');
 // Load env vars
 dotenv.config();
 
+const allowedOrigins = [
+  "http://localhost:5173", // local dev frontend
+  "https://interview-prep-bice-seven.vercel.app", // deployed frontend URL
+];
 const app = express();
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true, // if using cookies or auth headers
+  })
+);
 
 // Rate limiting
 const limiter = rateLimit({
