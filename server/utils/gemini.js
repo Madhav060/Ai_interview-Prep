@@ -290,9 +290,12 @@ Generate the questions now:`;
 /**
  * Evaluate ALL answers provided by the candidate against the questions and resume context.
  */
+/**
+ * Evaluate ALL answers provided by the candidate against the questions and resume context.
+ */
 exports.evaluateAllAnswers = async (questionsAndAnswers, resumeContext) => {
   try {
-    // Input validation
+    // Input validation (remains the same)
     if (!Array.isArray(questionsAndAnswers) || questionsAndAnswers.length === 0) {
       throw new Error('Must provide a non-empty array of questions and answers for evaluation');
     }
@@ -312,8 +315,11 @@ exports.evaluateAllAnswers = async (questionsAndAnswers, resumeContext) => {
       `Question ${idx + 1}: ${qa.question}\nCandidate's Answer: ${qa.answer}`
     ).join('\n\n');
 
-    // Construct the evaluation prompt
-    const prompt = `You are an expert interview evaluator specializing in software engineering roles (MERN stack). Evaluate the candidate's responses to ALL interview questions below with DETAILED SCORING based on relevance, correctness, and overall quality, considering the provided resume context.
+    // --- PROMPT IMPROVEMENT ---
+    // 1. Changed persona to "strict and critical".
+    // 2. Added an explicit rule to "Be extremely critical" of bad answers.
+    // 3. Updated score definitions to include "nonsensical" and "placeholder" for a score of 1.
+    const prompt = `You are a strict and critical expert interview evaluator specializing in software engineering roles (MERN stack). Evaluate the candidate's responses to ALL interview questions below with DETAILED SCORING based on relevance, correctness, and overall quality, considering the provided resume context.
 
 Interview Questions and Answers:
 ${qaText}
@@ -323,15 +329,19 @@ ${resumeContext}
 
 Evaluation Task:
 For EACH question, provide the following on separate lines:
-1.  **Relevance Score** (1-10): How directly and completely does the answer address the specific question asked? (1=Off-topic, 10=Perfectly relevant)
-2.  **Correctness Score** (1-10): How technically accurate, logically sound, and factually correct is the answer? Consider best practices for MERN stack development. (1=Incorrect, 10=Flawless)
+1.  **Relevance Score** (1-10): How directly and completely does the answer address the specific question asked? (1=Off-topic or nonsensical, 10=Perfectly relevant)
+2.  **Correctness Score** (1-10): How technically accurate, logically sound, and factually correct is the answer? Consider best practices for MERN stack development. (1=Incorrect, irrelevant, or a placeholder answer like 'alpha beta', 10=Flawless)
 3.  **Overall Score** (1-10): Your combined assessment of the answer's quality, considering clarity, depth, examples, and relevance to the resume context. (1=Poor, 10=Excellent)
 4.  **Feedback** (Max 100 words): Constructive feedback that includes:
     * Specific strengths observed in the answer.
     * Clear areas for improvement with actionable suggestions.
     * Comment on how well the answer aligns with or utilizes experience mentioned in the resume context, if applicable.
 
-Format your response EXACTLY like this template for EACH question, ensuring all labels and score formats are precise:
+**Crucial Scoring Rules:**
+- **Be extremely critical:** You MUST assign very low scores (1-3) for answers that are nonsensical, placeholders (like 'alpha beta gamma'), or completely off-topic. Do not be polite; be accurate in your low scoring.
+- Answers that are just "I don't know" should receive a 1 for Correctness and a 1 for Relevance.
+
+Format your response EXACTLY like this template for EACH question:
 
 Question 1:
 Relevance: [number]/10
@@ -347,20 +357,25 @@ Feedback: [Your detailed feedback for Question 2, max 100 words]
 
 [...continue this format for all ${questionsAndAnswers.length} questions...]
 
+IMPORTANT: Do NOT include any introductory or concluding text (e.g., "Here is the evaluation:"). Start DIRECTLY with "Question 1:".
+
 Begin evaluation now:`;
 
     // Call the AI model with retry logic
     const evaluationText = await retryWithBackoff(async () => {
+      
+      // --- TEMPERATURE IMPROVEMENT ---
+      // Lowered temperature from 0.5 to 0.3 for more analytical and less "creative" (polite) evaluation.
       const model = getTextGenerationModel({
-        temperature: 0.5, // Lower temperature for more consistent evaluation
-        maxOutputTokens: 2048, // Generous limit for potentially long feedback
+        temperature: 0.3, 
+        maxOutputTokens: 2048, 
       });
 
       const result = await model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
 
-      // Check for empty response and log reason
+      // Check for empty response (remains the same)
       if (!text || text.trim().length === 0) {
         const finishReason = response?.candidates?.[0]?.finishReason;
         const safetyRatings = response?.promptFeedback?.safetyRatings;
@@ -378,75 +393,78 @@ Begin evaluation now:`;
       return text;
     });
 
-    // --- Robust Parsing Logic ---
+    // --- ROBUST PARSING LOGIC (This part is already good) ---
     const evaluations = [];
-    // Split by "Question X:" ignoring case and allowing optional space after colon
-    const questionBlocks = evaluationText.split(/Question\s+\d+:/i).filter(block => block.trim());
+    const questionBlocks = evaluationText.split(/Question\s+\d+:/i);
 
-    if (questionBlocks.length === 0) {
+    if (questionBlocks.length > 0) {
+        questionBlocks.shift();
+    }
+
+    if (questionBlocks.length === 0 && evaluationText.trim().length > 0) {
         console.error('Could not parse any question blocks from evaluation response:', evaluationText.substring(0, 300));
         throw new Error('Failed to parse evaluation response format. Unexpected AI output.');
     }
 
     for (let i = 0; i < questionBlocks.length; i++) {
-        const block = questionBlocks[i].trim(); // Trim each block
+        const block = questionBlocks[i].trim(); 
 
-        // Regex: Optional whitespace, label, colon, optional whitespace, digits, optional /10
         const relevanceMatch = block.match(/Relevance:\s*(\d+)(?:\s*\/10)?/i);
         const correctnessMatch = block.match(/Correctness:\s*(\d+)(?:\s*\/10)?/i);
         const overallMatch = block.match(/Overall:\s*(\d+)(?:\s*\/10)?/i);
-        // Regex: Feedback label, colon, optional whitespace, capture everything after (non-greedy)
-        // until the end of the block (using [\s\S]*?)
         const feedbackMatch = block.match(/Feedback:\s*([\s\S]*)/i);
 
-        // Parse scores with defaults and radix
-        let relevanceScore = relevanceMatch ? parseInt(relevanceMatch[1], 10) : 5;
-        let correctnessScore = correctnessMatch ? parseInt(correctnessMatch[1], 10) : 5;
-        // Calculate overall if missing from regex match
-        let overallScore = overallMatch ? parseInt(overallMatch[1], 10) : Math.round((relevanceScore + correctnessScore) / 2);
+        let relevanceScore = relevanceMatch ? parseInt(relevanceMatch[1], 10) : 1;
+        let correctnessScore = correctnessMatch ? parseInt(correctnessMatch[1], 10) : 1;
+        let overallScoreParsed = overallMatch ? parseInt(overallMatch[1], 10) : null;
+        let feedback = feedbackMatch ? feedbackMatch[1].trim() : 'Feedback could not be parsed. Please check the raw AI response if needed.';
 
-        // Extract feedback, provide a more informative default if missing
-        const feedback = feedbackMatch ? feedbackMatch[1].trim() : 'Feedback could not be parsed. Please check the raw AI response if needed.';
+        if (feedback.trim() === '' && (relevanceMatch || correctnessMatch)) {
+            feedback = 'No specific feedback was provided by the AI.';
+        }
 
-        // Clamp scores to the valid 1-10 range AFTER parsing
-        relevanceScore = Math.max(1, Math.min(10, relevanceScore || 1)); // Default to 1 if NaN
+        relevanceScore = Math.max(1, Math.min(10, relevanceScore || 1));
         correctnessScore = Math.max(1, Math.min(10, correctnessScore || 1));
-        overallScore = Math.max(1, Math.min(10, overallScore || 1));
+
+        let overallScore;
+        if (overallScoreParsed !== null) {
+            overallScore = Math.max(1, Math.min(10, overallScoreParsed || 1));
+        } else {
+            overallScore = Math.max(1, Math.min(10, Math.round((relevanceScore + correctnessScore) / 2)));
+        }
 
         evaluations.push({
             score: overallScore,
-            relevanceScore,
-            correctnessScore,
+            relevanceScore: relevanceScore, 
+            correctnessScore: correctnessScore, 
             feedback
         });
     }
 
-    // Ensure the number of evaluations matches the number of Q&A pairs
-    // Pad with default if AI returned fewer blocks than expected
+    // Pad or trim evaluations (remains the same)
     while (evaluations.length < questionsAndAnswers.length) {
         console.warn(`Padding evaluation ${evaluations.length + 1} as it was missing in AI response.`);
         evaluations.push({
-            score: 1, // Default to lowest score if missing
+            score: 1, 
             relevanceScore: 1,
             correctnessScore: 1,
             feedback: 'Evaluation for this question was missing in the AI response.'
         });
     }
 
-    // Trim extra evaluations if AI returned more blocks than expected
     if (evaluations.length > questionsAndAnswers.length) {
         console.warn(`AI returned ${evaluations.length} evaluations, but only ${questionsAndAnswers.length} questions were provided. Trimming extra evaluations.`);
         evaluations.length = questionsAndAnswers.length;
     }
 
-    return evaluations; // Return the parsed and validated evaluations array
+    return evaluations; 
 
   } catch (error) {
     console.error('Error in evaluateAllAnswers function:', error);
-    // Return default evaluations if the entire process fails
+    // Fallback (remains the same)
     console.log('Returning fallback evaluations due to critical error during evaluation.');
     return questionsAndAnswers.map((qa, index) => ({
-      score: 1, // Default to lowest score on complete failure
+      score: 1, 
       relevanceScore: 1,
       correctnessScore: 1,
       feedback: `A critical error occurred during evaluation: ${error.message}. Unable to provide feedback for question ${index + 1}.`
